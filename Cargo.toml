@@ -1,0 +1,16 @@
+[package]
+name = "soundthemed"
+version = "0.1.0"
+edition = "2024"
+description = "Freedesktop sound theme daemon — plays event sounds for USB, battery, and more"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "fs", "sync", "time"] }
+udev = "0.9"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+dirs = "6"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
