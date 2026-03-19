@@ -8,7 +8,7 @@
 //! contain raw pointers and aren't Send. Uses poll() on
 //! the monitor fd to block until events arrive.
 
-use crate::events::SoundEvent;
+use soundthemed_shared::sound_ids::SoundEvent;
 use std::os::unix::io::AsRawFd;
 use tokio::sync::mpsc;
 use udev::MonitorBuilder;
