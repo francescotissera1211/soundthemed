@@ -5,7 +5,7 @@
 //! (plug/unplug) are handled instantly by the udev monitor
 //! instead, so this module only watches the percentage.
 
-use crate::events::SoundEvent;
+use soundthemed_shared::sound_ids::SoundEvent;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
