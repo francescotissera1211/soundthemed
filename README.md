@@ -1,28 +1,45 @@
 # soundthemed
 
-A lightweight daemon that plays [freedesktop sound theme](https://www.freedesktop.org/wiki/Specifications/sound-theme-spec/) sounds in response to system events. Built for Wayland desktops and compositors that don't ship their own event sounds.
+A freedesktop sound agent that plays [sound theme](https://www.freedesktop.org/wiki/Specifications/sound-theme-spec/) sounds in response to system events. Built for Wayland desktops and compositors that don't ship their own event sounds.
 
 ## What it does
 
 - **USB hotplug** — plays `device-added` / `device-removed` when you plug or unplug a USB device
 - **Charger events** — plays `power-plug` / `power-unplug` instantly when the AC adapter state changes
-- **Battery warnings** — plays `battery-low` and `battery-caution` when battery drops below configurable thresholds
-
-All events are detected via udev (instant, no polling for USB/charger). Battery percentage is polled once per minute.
+- **Battery warnings** — plays `battery-low` and `battery-caution` when battery drops below configurable thresholds (polled once per minute)
+- **Network connectivity** — plays sounds on connect/disconnect via NetworkManager
+- **Session events** — plays sounds on suspend resume and screen unlock via systemd-logind
+- **Desktop notifications** — plays `message` or `dialog-warning` for incoming notifications (respects `suppress-sound` hint)
+- **Volume changes** — optionally plays a sound when the default audio sink volume changes (disabled by default)
+- **Compositor bell** — detects terminal/application bell events on Niri (auto-detected, always active)
+- **Startup and shutdown sounds** — configurable sounds played when the daemon starts and stops
+- **D-Bus service** — exposes `org.freedesktop.SoundThemed1` on the session bus so external apps and scripts can trigger sounds by event ID
 
 ## How it works
 
-1. Detects system events (udev for USB and power, sysfs polling for battery level)
+1. Detects system events from multiple sources (udev, sysfs, D-Bus, compositor IPC)
 2. Resolves the event to a sound file from your active freedesktop sound theme
-3. Plays it with `pw-play` (PipeWire)
+3. Plays it with `pw-play` (PipeWire) — fire-and-forget, so multiple sounds can overlap naturally
 
 Sound theme is read from gsettings (`org.gnome.desktop.sound` → `theme-name`). If gsettings isn't available, falls back to a config file or the `freedesktop` default theme.
+
+## Project structure
+
+soundthemed is a Cargo workspace with three crates:
+
+- **`daemon/`** — the main daemon binary (`soundthemed`)
+- **`config-gui/`** — a GTK4/Libadwaita configuration GUI (`soundthemed-config`)
+- **`shared/`** — shared library for config, theme resolution, and sound IDs
 
 ## Requirements
 
 - Linux with udev
 - PipeWire (`pw-play` in PATH)
 - A freedesktop-compatible sound theme installed (most distros ship one)
+- D-Bus session bus (for network, session, notification, and D-Bus service features)
+- NetworkManager (for network connectivity sounds)
+- GTK4 and Libadwaita (for the configuration GUI)
+- ffmpeg (for theme creation from audio files)
 
 ## Building
 
@@ -30,19 +47,37 @@ Sound theme is read from gsettings (`org.gnome.desktop.sound` → `theme-name`).
 cargo build --release
 ```
 
-The binary is at `target/release/soundthemed`.
+This produces two binaries:
+
+- `target/release/soundthemed` — the daemon
+- `target/release/soundthemed-config` — the configuration GUI
+
+## Installation
+
+Copy both binaries to somewhere in your PATH:
+
+```sh
+cp target/release/soundthemed ~/.local/bin/
+cp target/release/soundthemed-config ~/.local/bin/
+```
+
+The `soundthemed-config` binary must be in PATH because the daemon launches it via `soundthemed --config`.
 
 ## Usage
 
 ```sh
-# Run in foreground
+# Run the daemon in the foreground
 soundthemed
+
+# Launch the configuration GUI
+soundthemed --config
+
+# Create a sound theme from a folder of audio files
+soundthemed create-theme --name my-theme --from-dir ~/sounds/
 
 # With debug logging
 RUST_LOG=debug soundthemed
 ```
-
-Designed to be started by your compositor's autostart, a systemd user unit, or similar.
 
 ### Systemd user service
 
@@ -53,7 +88,7 @@ Description=Freedesktop sound theme daemon
 After=pipewire.service
 
 [Service]
-ExecStart=/path/to/soundthemed
+ExecStart=%h/.local/bin/soundthemed
 Restart=on-failure
 
 [Install]
@@ -63,6 +98,11 @@ WantedBy=default.target
 ```sh
 systemctl --user enable --now soundthemed
 ```
+
+### Signal handling
+
+- **SIGHUP** — reloads configuration from disk
+- **SIGTERM / Ctrl+C** — plays shutdown sound, then exits cleanly
 
 ## Configuration
 
@@ -78,9 +118,92 @@ enabled = true
 # Battery warning thresholds (percentage)
 battery_low_percent = 15
 battery_critical_percent = 5
+
+# Startup/shutdown sounds (sound event ID, file path, or "none")
+startup_sound = "soundthemed-start"
+shutdown_sound = "soundthemed-stop"
+
+# Toggle event sources on/off
+[sources]
+udev = true
+battery = true
+network = true
+session = true
+volume = false          # disabled by default
+notifications = true
+dbus_service = true
+
+# Per-event overrides: "default", "none", or a file path
+[events]
+device-added = "default"
+device-removed = "none"       # silence this event
+battery-low = "/path/to/custom-alert.oga"
 ```
 
-gsettings takes priority over the config file for the theme name, so if you're on GNOME or a gsettings-compatible desktop, it'll pick up your system theme automatically.
+gsettings takes priority over the config file for the theme name and enabled state, so if you're on GNOME or a gsettings-compatible desktop, it'll pick up your system theme automatically.
+
+## Configuration GUI
+
+The `soundthemed-config` GUI provides a graphical way to manage all settings:
+
+- Theme selection from installed themes
+- Startup/shutdown sound selection
+- Per-event sound overrides and previews
+- Theme creation from folders of audio files
+
+Launch it with `soundthemed --config` or run `soundthemed-config` directly.
+
+## D-Bus service
+
+soundthemed exposes `org.freedesktop.SoundThemed1` on the session bus with the following interface:
+
+**Methods:**
+- `PlaySound(event_id: string)` — play a sound by freedesktop event ID (fire-and-forget)
+- `PlaySoundSync(event_id: string) → bool` — play a sound and wait for completion
+- `HasSound(event_id: string) → bool` — check if a sound exists for the given event
+- `ReloadConfig()` — reload configuration from disk
+
+**Properties:**
+- `Enabled` (bool) — whether sounds are currently enabled
+- `ThemeName` (string) — the active sound theme name
+
+Example usage from the command line:
+
+```sh
+busctl --user call org.freedesktop.SoundThemed1 \
+  /org/freedesktop/SoundThemed1 \
+  org.freedesktop.SoundThemed1 \
+  PlaySound s "bell"
+```
+
+## Bell shim
+
+For compositors that don't support the `xdg-system-bell-v1` Wayland protocol (e.g. Niri, Sway, Hyprland), a bell shim is provided in `shim/`. This is an `LD_PRELOAD` library that intercepts `gtk_widget_error_bell()` and routes it through soundthemed's D-Bus service.
+
+Build:
+
+```sh
+gcc -shared -fPIC -O2 -o shim/bell_shim.so shim/bell_shim.c \
+    $(pkg-config --cflags --libs dbus-1)
+```
+
+Use:
+
+```sh
+LD_PRELOAD=/path/to/bell_shim.so your-gtk-app
+```
+
+## Theme creation
+
+soundthemed can create freedesktop-compatible sound themes from a folder of audio files:
+
+```sh
+soundthemed create-theme --name my-theme --from-dir ~/sounds/
+```
+
+This converts audio files (oga, ogg, mp3, wav, m4a, flac, opus, wma, aac) to Ogg Vorbis and installs them to `~/.local/share/sounds/<name>/stereo/` with a proper `index.theme`. File names should match freedesktop sound event IDs (e.g. `device-added.mp3`).
+
+The same functionality is available through the configuration GUI.
 
 ## Sound theme lookup
 
